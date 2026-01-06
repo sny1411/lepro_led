@@ -627,6 +627,100 @@ class LeproLedLight(LightEntity):
             _LOGGER.error("Failed to request state update: %s", e)
 
 
+class LeproCeilingLight(LightEntity):
+    """Simplified light entity for Lepro Ceiling Lights (T1 series)."""
+
+    def __init__(self, device, mqtt_client, entry_id):
+        self._device = device
+        self._mqtt_client = mqtt_client
+        self._entry_id = entry_id
+        self._is_on = False
+        self._brightness = 255
+        self._d30 = None  # Unknown field discovered in ceiling lights
+        self._attr_unique_id = f"lepro_{device['did']}"
+        self._attr_name = device.get("name", "Lepro Ceiling Light")
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, str(self._device["did"]))},
+            "name": self._attr_name,
+            "manufacturer": "Lepro",
+            "model": self._device.get("series", "Lepro Ceiling Light"),
+            "sw_version": self._device.get("version", ""),
+        }
+
+    @property
+    def supported_color_modes(self):
+        # For now, only ON/OFF mode
+        # Can be extended to ColorMode.BRIGHTNESS or ColorMode.RGB later
+        return {ColorMode.ONOFF}
+
+    @property
+    def color_mode(self):
+        return ColorMode.ONOFF
+
+    @property
+    def is_on(self):
+        return self._is_on
+
+    async def async_turn_on(self, **kwargs):
+        """Turn on the ceiling light."""
+        self._is_on = True
+
+        # Build MQTT command - simple ON command
+        command = {
+            "id": random.randint(100000, 999999),
+            "t": int(time.time()),
+            "d": {
+                "d1": 1  # Power ON
+            }
+        }
+
+        # Send command
+        await self._send_mqtt_command(command)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs):
+        """Turn off the ceiling light."""
+        self._is_on = False
+
+        # Build MQTT command - simple OFF command
+        command = {
+            "id": random.randint(100000, 999999),
+            "t": int(time.time()),
+            "d": {
+                "d1": 0  # Power OFF
+            }
+        }
+
+        # Send command
+        await self._send_mqtt_command(command)
+        self.async_write_ha_state()
+
+    async def _send_mqtt_command(self, payload: dict):
+        """Send command via MQTT"""
+        topic = f"le/{self._device['did']}/prp/set"
+        await self._mqtt_client.publish(topic, json.dumps(payload))
+        _LOGGER.debug("Sent MQTT command to %s: %s", topic, payload)
+
+    async def async_added_to_hass(self):
+        """Run when entity is added to hass."""
+        await super().async_added_to_hass()
+        # Request initial state
+        await self._request_state_update()
+
+    async def _request_state_update(self):
+        """Request current state from device."""
+        try:
+            topic = f"le/{self._device['did']}/prp/get"
+            payload = json.dumps({"d": ["d1"]})
+            await self._mqtt_client.publish(topic, payload)
+            _LOGGER.debug("Requested state update for %s", self.name)
+        except Exception as e:
+            _LOGGER.error("Failed to request state update: %s", e)
+
+
 class LeproSegmentLight(LightEntity):
     """Represents a single segment of a segmented Lepro LED."""
     def __init__(self, parent: LeproLedLight, index: int):
@@ -881,12 +975,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     device_entity_map = {}
     segments_map = {}
     for device in devices:
-        entity = LeproLedLight(device, mqtt_client, entry.entry_id)
+        series = device.get("series", "") or ""
+
+        # Detect device type and create appropriate entity
+        if "T1" in series:
+            # Ceiling light (T1 series) - simplified entity
+            entity = LeproCeilingLight(device, mqtt_client, entry.entry_id)
+            _LOGGER.info("Creating Lepro Ceiling Light entity for %s (series: %s)", device.get("name"), series)
+        else:
+            # LED strip (S1-5 or other) - full featured entity
+            entity = LeproLedLight(device, mqtt_client, entry.entry_id)
+            _LOGGER.info("Creating Lepro LED Strip entity for %s (series: %s)", device.get("name"), series)
+
         entities.append(entity)
         device_entity_map[str(device['did'])] = entity
 
         # If this is a segmented series (S1-5) create 25 segment lights
-        series = device.get("series", "") or ""
         if "S1-5" in series:
             segs = []
             for idx in range(25):
@@ -917,60 +1021,80 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             # Handle different message types
             if message_type in ["rpt", "set", "getr"]:
                 data = payload.get('d', {})
-                
-                # Update basic state
+
+                # Skip if data is a list (get requests)
+                if isinstance(data, list):
+                    return
+
+                # Check if this is a ceiling light (T1) or LED strip
+                is_ceiling_light = isinstance(entity, LeproCeilingLight)
+
+                # Update basic state (common to all devices)
                 if 'd1' in data:
                     entity._is_on = bool(data['d1'])
-                
-                # Update mode
-                if 'd2' in data:
-                    entity._mode = data['d2']
-                
-                # Update brightness
-                if 'd52' in data:
-                    entity._brightness = entity._map_device_brightness(data['d52'])
-                    entity._attr_brightness = entity._brightness
-                
-                # Update effect and colors
-                if 'd50' in data:
-                    entity._parse_d50(data['d50'])
-                
-                # Update d60: special effects and sensitivity
-                if 'd60' in data:
-                    sens, parsed_effect = entity._parse_d60(data['d60'])
-                    # update sensitivity
-                    entity._sensitivity = sens
-                    # If parser recognizes a special effect code, set it
-                    if parsed_effect:
-                        entity._effect = parsed_effect
 
-                # Update effect based on mode (mode==3 indicates special effects)
-                if entity._mode == 3 and entity._effect not in entity.SPECIAL_EFFECTS:
-                    # If we have no parsed effect but mode says special, default to flash
-                    entity._effect = entity.EFFECT_FLASH
+                if is_ceiling_light:
+                    # Ceiling light specific handling
+                    if 'd30' in data:
+                        entity._d30 = data['d30']
+                        _LOGGER.debug("Ceiling light %s: d30=%s", entity.name, entity._d30)
 
-                # update main + segments states
-                entity.async_write_ha_state()
+                    # Update state
+                    entity.async_write_ha_state()
+                    _LOGGER.debug("Updated ceiling light %s: on=%s", entity.name, entity._is_on)
 
-                # NEW: also refresh any number entities (speed / sensitivity) linked to this device
-                try:
-                    numbers_map = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("numbers", {})
-                    for num in numbers_map.get(did, []):
-                        try:
-                            num.async_write_ha_state()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                else:
+                    # LED strip specific handling (original logic)
+                    # Update mode
+                    if 'd2' in data:
+                        entity._mode = data['d2']
 
-                try:
-                    for seg in segments_map.get(did, []):
-                        seg.async_write_ha_state()
-                except Exception:
-                    pass
+                    # Update brightness
+                    if 'd52' in data:
+                        entity._brightness = entity._map_device_brightness(data['d52'])
+                        entity._attr_brightness = entity._brightness
 
-                _LOGGER.debug("Updated state for %s: on=%s, mode=%s, effect=%s, brightness=%s, speed=%s, rgb=%s, sensitivity=%s", 
-                             entity.name, entity._is_on, entity._mode, entity._effect, entity._brightness, entity._speed, entity._segment_colors[0], entity._sensitivity)
+                    # Update effect and colors
+                    if 'd50' in data:
+                        entity._parse_d50(data['d50'])
+
+                    # Update d60: special effects and sensitivity
+                    if 'd60' in data:
+                        sens, parsed_effect = entity._parse_d60(data['d60'])
+                        # update sensitivity
+                        entity._sensitivity = sens
+                        # If parser recognizes a special effect code, set it
+                        if parsed_effect:
+                            entity._effect = parsed_effect
+
+                    # Update effect based on mode (mode==3 indicates special effects)
+                    if entity._mode == 3 and entity._effect not in entity.SPECIAL_EFFECTS:
+                        # If we have no parsed effect but mode says special, default to flash
+                        entity._effect = entity.EFFECT_FLASH
+
+                    # update main + segments states
+                    entity.async_write_ha_state()
+
+                    # Also refresh any number entities (speed / sensitivity) linked to this device
+                    try:
+                        numbers_map = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("numbers", {})
+                        for num in numbers_map.get(did, []):
+                            try:
+                                num.async_write_ha_state()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    # Update segments
+                    try:
+                        for seg in segments_map.get(did, []):
+                            seg.async_write_ha_state()
+                    except Exception:
+                        pass
+
+                    _LOGGER.debug("Updated LED strip %s: on=%s, mode=%s, effect=%s, brightness=%s, speed=%s, rgb=%s, sensitivity=%s",
+                                 entity.name, entity._is_on, entity._mode, entity._effect, entity._brightness, entity._speed, entity._segment_colors[0], entity._sensitivity)
                     
         except Exception as e:
             _LOGGER.error("Error processing MQTT message: %s", e)
