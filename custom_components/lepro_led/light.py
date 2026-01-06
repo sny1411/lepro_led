@@ -666,6 +666,7 @@ class LeproCeilingLight(LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn on the ceiling light."""
+        _LOGGER.info("CEILING LIGHT: Turning ON %s", self.name)
         self._is_on = True
 
         # Build MQTT command - simple ON command
@@ -678,11 +679,14 @@ class LeproCeilingLight(LightEntity):
         }
 
         # Send command
+        _LOGGER.info("CEILING LIGHT: Sending command: %s", command)
         await self._send_mqtt_command(command)
         self.async_write_ha_state()
+        _LOGGER.info("CEILING LIGHT: State updated to ON")
 
     async def async_turn_off(self, **kwargs):
         """Turn off the ceiling light."""
+        _LOGGER.info("CEILING LIGHT: Turning OFF %s", self.name)
         self._is_on = False
 
         # Build MQTT command - simple OFF command
@@ -695,14 +699,18 @@ class LeproCeilingLight(LightEntity):
         }
 
         # Send command
+        _LOGGER.info("CEILING LIGHT: Sending command: %s", command)
         await self._send_mqtt_command(command)
         self.async_write_ha_state()
+        _LOGGER.info("CEILING LIGHT: State updated to OFF")
 
     async def _send_mqtt_command(self, payload: dict):
         """Send command via MQTT"""
         topic = f"le/{self._device['did']}/prp/set"
-        await self._mqtt_client.publish(topic, json.dumps(payload))
-        _LOGGER.debug("Sent MQTT command to %s: %s", topic, payload)
+        payload_json = json.dumps(payload)
+        _LOGGER.info("CEILING LIGHT: Publishing to %s: %s", topic, payload_json)
+        await self._mqtt_client.publish(topic, payload_json)
+        _LOGGER.info("CEILING LIGHT: Command sent successfully")
 
     async def async_added_to_hass(self):
         """Run when entity is added to hass."""
@@ -1035,13 +1043,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                 if is_ceiling_light:
                     # Ceiling light specific handling
+                    _LOGGER.info("CEILING LIGHT: Received message for %s - d1=%s", entity.name, data.get('d1'))
+
                     if 'd30' in data:
                         entity._d30 = data['d30']
                         _LOGGER.debug("Ceiling light %s: d30=%s", entity.name, entity._d30)
 
                     # Update state
                     entity.async_write_ha_state()
-                    _LOGGER.debug("Updated ceiling light %s: on=%s", entity.name, entity._is_on)
+                    _LOGGER.info("CEILING LIGHT: Updated state for %s: on=%s", entity.name, entity._is_on)
 
                 else:
                     # LED strip specific handling (original logic)
@@ -1100,11 +1110,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             _LOGGER.error("Error processing MQTT message: %s", e)
    
     mqtt_client.set_message_callback(handle_mqtt_message)
-    
+
     # 10) Subscribe and start
     await mqtt_client.subscribe(f"le/{client_id_suffix}/act/app/exe")
+    _LOGGER.info("MQTT: Subscribed to le/%s/act/app/exe", client_id_suffix)
+
     for did in device_entity_map.keys():
-        await mqtt_client.subscribe(f"le/{did}/prp/#")
+        topic = f"le/{did}/prp/#"
+        await mqtt_client.subscribe(topic)
+        _LOGGER.info("MQTT: Subscribed to %s for device %s", topic, device_entity_map[did].name)
     
     # Store for cleanup
     if DOMAIN not in hass.data:
