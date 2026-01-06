@@ -640,7 +640,7 @@ class LeproCeilingLight(LightEntity):
 
         # Track last known state for restoration
         self._mode = 2  # Default to RGB mode (d2=2)
-        self._d50 = "N01:P10001FFFFFFFFFFFF2100010020U3V3000640000E1;"  # Default white in RGB mode
+        self._d50 = "N01:P10001FFFFFFF2100010020U3V3000640000E1;"  # Default white in RGB mode (FFFFFF = white)
         self._d52 = 1000  # Default brightness
         self._d3 = 1000   # White mode brightness
         self._d4 = 500    # White mode temperature (middle value)
