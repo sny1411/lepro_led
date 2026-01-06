@@ -637,6 +637,14 @@ class LeproCeilingLight(LightEntity):
         self._is_on = False
         self._brightness = 255
         self._d30 = None  # Unknown field discovered in ceiling lights
+
+        # Track last known state for restoration
+        self._mode = 2  # Default to RGB mode (d2=2)
+        self._d50 = "N01:P10001FFFFFFFFFFFF2100010020U3V3000640000E1;"  # Default white in RGB mode
+        self._d52 = 1000  # Default brightness
+        self._d3 = 1000   # White mode brightness
+        self._d4 = 500    # White mode temperature (middle value)
+
         self._attr_unique_id = f"lepro_{device['did']}"
         self._attr_name = device.get("name", "Lepro Ceiling Light")
 
@@ -666,16 +674,30 @@ class LeproCeilingLight(LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn on the ceiling light."""
-        _LOGGER.info("CEILING LIGHT: Turning ON %s", self.name)
+        _LOGGER.info("CEILING LIGHT: Turning ON %s (mode: %s)", self.name, self._mode)
         self._is_on = True
 
-        # Build MQTT command - simple ON command
+        # Build MQTT command - restore last known state
+        # The ceiling light needs to know which mode to go into
+        command_data = {"d1": 1}
+
+        if self._mode == 0:
+            # White mode: send d2, d3, d4
+            command_data["d2"] = 0
+            command_data["d3"] = self._d3
+            command_data["d4"] = self._d4
+            _LOGGER.info("CEILING LIGHT: Restoring WHITE mode (brightness=%s, temp=%s)", self._d3, self._d4)
+        else:
+            # RGB mode (d2=2): send d2, d50, d52
+            command_data["d2"] = 2
+            command_data["d50"] = self._d50
+            command_data["d52"] = self._d52
+            _LOGGER.info("CEILING LIGHT: Restoring RGB mode (brightness=%s, color=%s)", self._d52, self._d50[:30])
+
         command = {
             "id": random.randint(100000, 999999),
             "t": int(time.time()),
-            "d": {
-                "d1": 1  # Power ON
-            }
+            "d": command_data
         }
 
         # Send command
@@ -1045,13 +1067,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     # Ceiling light specific handling
                     _LOGGER.info("CEILING LIGHT: Received message for %s - d1=%s", entity.name, data.get('d1'))
 
+                    # Save all received values for state restoration
                     if 'd30' in data:
                         entity._d30 = data['d30']
-                        _LOGGER.debug("Ceiling light %s: d30=%s", entity.name, entity._d30)
+
+                    if 'd2' in data:
+                        entity._mode = data['d2']
+                        _LOGGER.debug("Ceiling light %s: mode changed to %s", entity.name, entity._mode)
+
+                    # RGB mode values
+                    if 'd50' in data:
+                        entity._d50 = data['d50']
+                        _LOGGER.debug("Ceiling light %s: d50=%s", entity.name, entity._d50[:30])
+
+                    if 'd52' in data:
+                        entity._d52 = data['d52']
+                        _LOGGER.debug("Ceiling light %s: brightness(RGB)=%s", entity.name, entity._d52)
+
+                    # White mode values
+                    if 'd3' in data:
+                        entity._d3 = data['d3']
+                        _LOGGER.debug("Ceiling light %s: brightness(WHITE)=%s", entity.name, entity._d3)
+
+                    if 'd4' in data:
+                        entity._d4 = data['d4']
+                        _LOGGER.debug("Ceiling light %s: temperature=%s", entity.name, entity._d4)
 
                     # Update state
                     entity.async_write_ha_state()
-                    _LOGGER.info("CEILING LIGHT: Updated state for %s: on=%s", entity.name, entity._is_on)
+                    _LOGGER.info("CEILING LIGHT: Updated state for %s: on=%s, mode=%s", entity.name, entity._is_on, entity._mode)
 
                 else:
                     # LED strip specific handling (original logic)
