@@ -708,16 +708,30 @@ class LeproCeilingLight(LightEntity):
 
     async def async_turn_off(self, **kwargs):
         """Turn off the ceiling light."""
-        _LOGGER.info("CEILING LIGHT: Turning OFF %s", self.name)
+        _LOGGER.info("CEILING LIGHT: Turning OFF %s (mode: %s)", self.name, self._mode)
         self._is_on = False
 
-        # Build MQTT command - simple OFF command
+        # Build MQTT command - ceiling lights need full state even for OFF
+        command_data = {"d1": 0}
+
+        # Include mode information even when turning off
+        if self._mode == 0:
+            # White mode
+            command_data["d2"] = 0
+            command_data["d3"] = self._d3
+            command_data["d4"] = self._d4
+            _LOGGER.info("CEILING LIGHT: Turning OFF in WHITE mode (brightness=%s, temp=%s)", self._d3, self._d4)
+        else:
+            # RGB mode
+            command_data["d2"] = 2
+            command_data["d50"] = self._d50
+            command_data["d52"] = self._d52
+            _LOGGER.info("CEILING LIGHT: Turning OFF in RGB mode (brightness=%s, color=%s)", self._d52, self._d50[:30])
+
         command = {
             "id": random.randint(100000, 999999),
             "t": int(time.time()),
-            "d": {
-                "d1": 0  # Power OFF
-            }
+            "d": command_data
         }
 
         # Send command
