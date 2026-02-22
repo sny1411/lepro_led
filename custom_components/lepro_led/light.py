@@ -634,8 +634,6 @@ class LeproCeilingLight(LightEntity):
         self._device = device
         self._mqtt_client = mqtt_client
         self._entry_id = entry_id
-        self._is_on = False
-        self._brightness = 255
         self._d30 = None  # Unknown field discovered in ceiling lights
 
         # Track last known state for restoration
@@ -645,10 +643,13 @@ class LeproCeilingLight(LightEntity):
         self._d3 = 1000   # White mode brightness
         self._d4 = 500    # White mode temperature (middle value)
 
-        self._attr_unique_id = f"lepro_{device['did']}"
+        # Entity attributes - use _attr_ prefix for HA to detect capabilities
+        self._attr_unique_id = f"lepro_ceiling_{device['did']}"
         self._attr_name = device.get("name", "Lepro Ceiling Light")
         self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         self._attr_color_mode = ColorMode.BRIGHTNESS
+        self._attr_is_on = False
+        self._attr_brightness = 255
 
     @property
     def device_info(self):
@@ -660,28 +661,22 @@ class LeproCeilingLight(LightEntity):
             "sw_version": self._device.get("version", ""),
         }
 
-    @property
-    def is_on(self):
-        return self._is_on
-
-    @property
-    def brightness(self):
+    def _get_brightness(self):
         """Return the brightness (0-255) based on current mode."""
         if self._mode == 0:
-            # White mode: use d3
             return int(self._d3 * 255 / 1000)
         else:
-            # RGB mode: use d52
             return int(self._d52 * 255 / 1000)
 
     async def async_turn_on(self, **kwargs):
         """Turn on the ceiling light."""
         _LOGGER.info("CEILING LIGHT: Turning ON %s (mode: %s)", self.name, self._mode)
-        self._is_on = True
+        self._attr_is_on = True
 
         # Handle brightness change if provided (convert 0-255 to 0-1000)
         if ATTR_BRIGHTNESS in kwargs:
             new_brightness = int(kwargs[ATTR_BRIGHTNESS] * 1000 / 255)
+            self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
             if self._mode == 0:
                 self._d3 = new_brightness
             else:
@@ -720,7 +715,7 @@ class LeproCeilingLight(LightEntity):
     async def async_turn_off(self, **kwargs):
         """Turn off the ceiling light."""
         _LOGGER.info("CEILING LIGHT: Turning OFF %s (mode: %s)", self.name, self._mode)
-        self._is_on = False
+        self._attr_is_on = False
 
         # Build MQTT command - ceiling lights need full state even for OFF
         command_data = {"d1": 0}
@@ -1084,12 +1079,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # Check if this is a ceiling light (T1) or LED strip
                 is_ceiling_light = isinstance(entity, LeproCeilingLight)
 
-                # Update basic state (common to all devices)
-                if 'd1' in data:
-                    entity._is_on = bool(data['d1'])
-
                 if is_ceiling_light:
-                    # Ceiling light specific handling
+                    # Ceiling light specific handling - uses _attr_ attributes
+                    if 'd1' in data:
+                        entity._attr_is_on = bool(data['d1'])
+
                     _LOGGER.info("CEILING LIGHT: Received message for %s - d1=%s", entity.name, data.get('d1'))
 
                     # Save all received values for state restoration
@@ -1107,11 +1101,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                     if 'd52' in data:
                         entity._d52 = data['d52']
+                        entity._attr_brightness = entity._get_brightness()
                         _LOGGER.debug("Ceiling light %s: brightness(RGB)=%s", entity.name, entity._d52)
 
                     # White mode values
                     if 'd3' in data:
                         entity._d3 = data['d3']
+                        entity._attr_brightness = entity._get_brightness()
                         _LOGGER.debug("Ceiling light %s: brightness(WHITE)=%s", entity.name, entity._d3)
 
                     if 'd4' in data:
@@ -1120,10 +1116,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                     # Update state
                     entity.async_write_ha_state()
-                    _LOGGER.info("CEILING LIGHT: Updated state for %s: on=%s, mode=%s", entity.name, entity._is_on, entity._mode)
+                    _LOGGER.info("CEILING LIGHT: Updated state for %s: on=%s, mode=%s", entity.name, entity._attr_is_on, entity._mode)
 
                 else:
                     # LED strip specific handling (original logic)
+                    # Update on/off state
+                    if 'd1' in data:
+                        entity._is_on = bool(data['d1'])
+
                     # Update mode
                     if 'd2' in data:
                         entity._mode = data['d2']
