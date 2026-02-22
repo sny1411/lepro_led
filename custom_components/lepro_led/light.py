@@ -660,22 +660,39 @@ class LeproCeilingLight(LightEntity):
 
     @property
     def supported_color_modes(self):
-        # For now, only ON/OFF mode
-        # Can be extended to ColorMode.BRIGHTNESS or ColorMode.RGB later
-        return {ColorMode.ONOFF}
+        return {ColorMode.BRIGHTNESS}
 
     @property
     def color_mode(self):
-        return ColorMode.ONOFF
+        return ColorMode.BRIGHTNESS
 
     @property
     def is_on(self):
         return self._is_on
 
+    @property
+    def brightness(self):
+        """Return the brightness (0-255) based on current mode."""
+        if self._mode == 0:
+            # White mode: use d3
+            return int(self._d3 * 255 / 1000)
+        else:
+            # RGB mode: use d52
+            return int(self._d52 * 255 / 1000)
+
     async def async_turn_on(self, **kwargs):
         """Turn on the ceiling light."""
         _LOGGER.info("CEILING LIGHT: Turning ON %s (mode: %s)", self.name, self._mode)
         self._is_on = True
+
+        # Handle brightness change if provided (convert 0-255 to 0-1000)
+        if ATTR_BRIGHTNESS in kwargs:
+            new_brightness = int(kwargs[ATTR_BRIGHTNESS] * 1000 / 255)
+            if self._mode == 0:
+                self._d3 = new_brightness
+            else:
+                self._d52 = new_brightness
+            _LOGGER.info("CEILING LIGHT: Setting brightness to %s (device: %s)", kwargs[ATTR_BRIGHTNESS], new_brightness)
 
         # Build MQTT command - restore last known state
         # The ceiling light needs to know which mode to go into
