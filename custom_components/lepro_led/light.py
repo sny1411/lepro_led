@@ -647,6 +647,8 @@ class LeproCeilingLight(LightEntity):
 
         self._attr_unique_id = f"lepro_{device['did']}"
         self._attr_name = device.get("name", "Lepro Ceiling Light")
+        self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+        self._attr_color_mode = ColorMode.BRIGHTNESS
 
     @property
     def device_info(self):
@@ -657,14 +659,6 @@ class LeproCeilingLight(LightEntity):
             "model": self._device.get("series", "Lepro Ceiling Light"),
             "sw_version": self._device.get("version", ""),
         }
-
-    @property
-    def supported_color_modes(self):
-        return {ColorMode.BRIGHTNESS}
-
-    @property
-    def color_mode(self):
-        return ColorMode.BRIGHTNESS
 
     @property
     def is_on(self):
